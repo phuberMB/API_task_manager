@@ -2,12 +2,14 @@ import logging
 import logging.config
 import time
 from fastapi import FastAPI, Request, Response
+from fastapi.routing import APIRouter
 from routes.user import router as user_router
 from routes.todo_list import router as todo_list_router
 from routes.task import router as task_router
 from routes.task_status import router as status_router
+from routes.auth import router as auth_router
 
-# Usa logging.conf si existe, si no, configura básico
+
 try:
     logging.config.fileConfig('logging.conf', disable_existing_loggers=False)
 except Exception:
@@ -24,6 +26,9 @@ app.include_router(user_router)
 app.include_router(todo_list_router)
 app.include_router(task_router)
 app.include_router(status_router)
+app.include_router(auth_router)
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):

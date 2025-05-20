@@ -6,6 +6,9 @@ from models.todo_list import TodoList
 from models.user import User
 from pydantic import BaseModel
 import logging
+from auth.jwt_auth import oauth2_scheme, decode_access_token, is_token_revoked
+from utils.deps import get_current_user, require_role
+from models.user import UserRole
 
 router = APIRouter(prefix="/lists", tags=["lists"])
 logger = logging.getLogger(__name__)
@@ -29,8 +32,22 @@ class TodoListResponse(BaseModel):
     class Config:
         orm_mode = True
 
-@router.post("/", response_model=TodoListResponse, status_code=status.HTTP_201_CREATED)
-def create_list(list_in: TodoListCreate, session: Session = Depends(get_session)):
+def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
+    if is_token_revoked(token):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = session.exec(select(User).where(User.username == payload["sub"])).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+@router.post("/", response_model=TodoListResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_role(UserRole.admin, UserRole.user))])
+def create_list(list_in: TodoListCreate, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    # Admin puede crear listas para cualquiera, user solo para sí mismo
+    if current_user.role == UserRole.user and list_in.owner_username != current_user.username:
+        raise HTTPException(status_code=403, detail="You can only create lists for yourself")
     owner = session.exec(select(User).where(User.username == list_in.owner_username)).first()
     if not owner:
         raise HTTPException(status_code=404, detail="Owner user not found")
@@ -59,8 +76,10 @@ def get_lists(
     email: Optional[str] = Query(None),
     skip: int = 0,
     limit: int = 100,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.admin, UserRole.user, UserRole.viewer))
 ):
+    # Admin: ve todas, user/viewer: solo sus propias listas
     query = select(TodoList, User).join(User, TodoList.owner_id == User.id)
     if id is not None:
         query = query.where(TodoList.id == id)
@@ -81,13 +100,20 @@ def get_lists(
         )
         for todo_list, user in results
     ]
-    return response
+    if current_user.role == UserRole.admin:
+        return response
+    else:
+        # Solo listas propias
+        response = [l for l in response if l.owner_username == current_user.username]
+        return response
 
 @router.put("/{id}", response_model=TodoListResponse)
-def update_list(id: int, list_in: TodoListUpdate, session: Session = Depends(get_session)):
+def update_list(id: int, list_in: TodoListUpdate, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
     todo_list = session.get(TodoList, id)
     if not todo_list:
         raise HTTPException(status_code=404, detail="List not found")
+    if current_user.role != UserRole.admin and todo_list.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only update your own lists")
     if list_in.title is not None:
         todo_list.title = list_in.title
     if list_in.description is not None:
@@ -104,10 +130,12 @@ def update_list(id: int, list_in: TodoListUpdate, session: Session = Depends(get
     )
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_list(id: int, session: Session = Depends(get_session)):
+def delete_list(id: int, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
     todo_list = session.get(TodoList, id)
     if not todo_list:
         raise HTTPException(status_code=404, detail="List not found")
+    if current_user.role != UserRole.admin and todo_list.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own lists")
     session.delete(todo_list)
     session.commit()
     logger.info(f"Task deleted: {id}")
