@@ -1,6 +1,6 @@
 from sqlmodel import SQLModel, create_engine, Session
 
-DATABASE_URL = "postgresql://username:password@localhost/task_manager"
+DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/task_manager"
 
 # Crear el motor de la base de datos
 engine = create_engine(DATABASE_URL, echo=True)
